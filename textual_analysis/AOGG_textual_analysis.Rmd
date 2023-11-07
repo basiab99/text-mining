@@ -1,0 +1,767 @@
+---
+title: "Projekt końcowy Analiza danych jakościowych i text mining"
+author: "Barbara Białek"
+output:
+  html_document:
+    df_print: paged
+    warning: FALSE
+---
+
+## Analiza książek Lucy Maud Montgomery z serii Ania z Zielonego Wzgórza
+
+Wybrano wariant dotyczący analizy książek tego samego autora. Wybrano powieści "Ania z Zielonego Wzgórza" oraz "Wymarzony dom Ani" autorki Lucy Maud Montgomery.
+
+```{r message=FALSE, warning=FALSE}
+library(tidytext)
+library(textstem)
+library(wordcloud)
+library(stringr)
+library(tidyverse)
+library(topicmodels)
+library(tm)
+library(dendextend)
+library(caret)
+library(class)
+library(e1071)
+```
+
+## Wczytanie danych
+
+Dane dla obu książek wczytano w formie dataframe jako poszczególne wiersze powieści.
+
+##### Dla "Ania z Zielonego Wzgórza"
+
+```{r warning=FALSE}
+green_gables <- readLines("C:/Users/basia/Desktop/textual_analysis/Anne of Green Gables.txt") %>%
+  strsplit(split = "\r\n") %>%
+  unlist() %>%
+  data.frame(line = 1:length(.), text = ., stringsAsFactors = FALSE)
+
+green_gables
+```
+
+##### Dla "Wymarzony Dom Ani"
+
+```{r warning=FALSE}
+house_of_dreams <- readLines("C:/Users/basia/Desktop/textual_analysis/Anne's House of Dreams.txt") %>%
+  strsplit(split = "\r\n") %>%
+  unlist() %>%
+  data.frame(line = 1:length(.), text = ., stringsAsFactors = FALSE)
+
+house_of_dreams
+```
+
+## Przygotowanie tekstów
+
+#### Czyszczenie tekstu
+
+##### Dla "Ania z Zielonego Wzgórza"
+
+```{r}
+clean_text <- function(dataframe) {
+  require(stringr)
+  
+  dataframe$text <- str_replace_all(dataframe$text, "\\s{2,}", " ")
+  dataframe$text <- str_replace_all(dataframe$text, "[:cntrl:]", " ")
+  dataframe$text <- tolower(dataframe$text)
+  dataframe$text <- str_remove_all(dataframe$text, "&amp")
+  dataframe$text <- str_remove_all(dataframe$text, "#[a-zA-Z0-9']*")
+  dataframe$text <- str_remove_all(dataframe$text, "@\\w+")
+  dataframe$text <- str_remove_all(dataframe$text, "(f|ht)(tp)([^ ]*)")
+  dataframe$text <- str_remove_all(dataframe$text, "http(s?)([^ ]*)")
+  dataframe$text <- str_remove_all(dataframe$text, "\\d")
+  dataframe$text <- str_replace_all(dataframe$text, "[[:punct:]]", " ")
+  dataframe$text <- str_remove_all(dataframe$text, "\\d")
+  dataframe$text <- str_replace_all(dataframe$text, "\\s{2,}", " ")
+  dataframe$text <- str_trim(dataframe$text)
+  
+  return(dataframe)
+}
+
+green_gables_cleaned <- clean_text(green_gables)
+
+green_gables_cleaned
+```
+
+##### Dla "Wymarzony Dom Ani"
+
+```{r}
+house_of_dreams_cleaned <- clean_text(house_of_dreams)
+
+house_of_dreams_cleaned
+```
+
+#### Tokenizacja
+
+##### Dla "Ania z Zielonego Wzgórza"
+
+```{r}
+green_gables_tokens <- green_gables_cleaned %>%
+  unnest_tokens(word, text)
+
+green_gables_tokens
+```
+
+##### Dla "Wymarzony Dom Ani"
+
+```{r}
+house_of_dreams_tokens <- house_of_dreams_cleaned %>%
+  unnest_tokens(word, text)
+
+house_of_dreams_tokens
+```
+
+#### Stopwords
+
+Pobranie stopwordów ze słownika w TidyText, wybrano leksykon smart jako, że zawiera najwięcej stopwordów, a zatem pomoże w dokładniejszym oczyszczeniu tekstu
+
+```{r}
+stopwords <- get_stopwords(language = "en", source = "smart") 
+stopwords <- data.frame(word=c(stopwords[[1]], "isn", "didn", "don", "ve", "hadn", "couldn", "wouldn", "ll", "aren", "will", "illustration", "chapter"))
+
+#dodajemy słowa związane z odmianą to be oraz illustration i chapter, ponieważ nie są one istotne dla dalszej analizy 
+
+stopwords
+```
+
+##### Dla "Ania z Zielonego Wzgórza"
+
+```{r}
+green_gables_tidy <- anti_join(green_gables_tokens, stopwords, by = join_by(word))
+green_gables_tidy
+
+```
+
+Po usunięciu stopwords z 107,212 słów pozostało 37,830.
+
+##### Dla "wymarzony Dom Ani"
+
+```{r}
+house_of_dreams_tidy <- anti_join(house_of_dreams_tokens, stopwords, by = join_by(word))
+
+house_of_dreams_tidy 
+```
+
+Po usunięciu stopwords z 83,197 słów pozostało 29,565.
+
+#### Lematyzacja
+
+Zdecydowano się na wykonanie lematyzacji, a zatem podmianę słów na ich formę podstawową.
+
+##### Dla "Ania z Zielonego Wzgórza"
+
+```{r}
+green_gables_lem <- green_gables_tidy %>%
+  mutate(word_lemma = lemmatize_words(word, language = "english")) %>%
+  select(line, word_lemma)
+
+green_gables_lem
+```
+
+##### Dla "Wymarzony Dom Ani"
+
+```{r}
+house_of_dreams_lem <- house_of_dreams_tidy %>%
+  mutate(word_lemma = lemmatize_words(word, language = "english")) %>%
+  select(line, word_lemma)
+
+house_of_dreams_lem
+```
+
+## Chmury słów
+
+Kolejnym etapem analizy jest przygotowanie chmur słów dla powieści traktowanych osobno oraz jako jeden tekst (z którego wyodrębniono elementy charakterystyczne tylko dla konkretnej powieści oraz te wspólne dla obu).
+
+#### Chmura słów dla "Ania z Zielonego Wzgórza"
+
+```{r}
+terms1 <- unlist(green_gables_lem)
+unique_terms1 <- unique(terms1)
+
+bow1 <- sapply(unique_terms1, function(x) sum(terms1 == x[1]))
+bow_sort1 <- sort(bow1, decreasing = T)
+
+
+wordcloud(names(bow_sort1), bow_sort1, max.words = 50, random.order = FALSE)
+```
+
+Na chmurze dotyczącej książki "Ania z Zielonego Wzgórza" znajduje się wiele słów dotyczących imion głównych postaci. Postanowiono nie usuwać ich z analizy jako, że dzięki nim możemy zaobserwować częstość występowania danych postaci w powieści. Przykładowo imię Marilla jest większe jako, że była to opiekunka Anne, imię Diana również się wyróżnia, jako że była to najlepsza przyjaciółka Anne. Samo imię Anne jest największe jako, że należy do głównej bohaterki, a ona sama często podkreślała, żeby jej imię pisać jako Anne a nie jako Ann. Zdecydowano także o zostawieniu słów takich jak Mrs, Miss czy Mr, jako że w czasach w których odbywa się powieść w ten sposób zwracano się do innych jako wyraz szacunku. Przejaw słów takich jak head, hair, face, eye może być związany z tym że Anne jako dziecko przywiązywała dużą uwagę do rozmyślania nad swoim wyglądem. Słowa takie jak school i child sugerują wiek głównych postaci - były to dzieci w wieku szkolnym.
+
+#### Chmura słów dla "Wymarzony Dom Ani"
+
+```{r}
+terms2 <- unlist(house_of_dreams_lem)
+unique_terms2 <- unique(terms2)
+
+bow2 <- sapply(unique_terms2, function(x) sum(terms2 == x[1]))
+bow_sort2 <- sort(bow2, decreasing = T)
+
+
+wordcloud(names(bow_sort2), bow_sort2, max.words = 50, random.order = FALSE)
+```
+
+Na chmurze dotyczącej książki "Wymarzony Dom Ani" ponownie pojawiają się imiona i nazwiska postaci, możemy zauważyć nowe główne postaci takie jak Leslie, z którą Anne była bardzo blisko po utracie dziecka, czy też Captain i Jim odnoszące się do przyjaciela Anne. Imię Gilbert, które pojawiało się w poprzedniej chmurze przybrało na znaczeniu - ma to związek z tym że w pierwszej powieści była to postać poboczna, w tej natomiast staje się on mężem głównej bohaterki (stąd też słowo marry). Słowo doctor również odgrywa ważną rolę ponieważ mąż głównej bohaterki zostaję lekarzem, wpływa to też na ich przeprowadzkę. Słowa takie jak Glen (nazwa wioski), sea, harbor odnoszą się do położenia nowego domu głównej bohaterki. Słowa home, house powiązane są niejako z tematem powieści, gdyż większa jej część odbywa się w wymarzonym domu bohaterki.
+
+#### Chmura słów wspólna dla obu powieści
+
+```{r}
+words <- intersect(terms1,terms2) 
+
+
+frequencies1 <- table(terms1)[words]
+frequencies2 <- table(terms2)[words]
+
+
+frequencies_sum <- frequencies1 + frequencies2
+
+wordcloud(words, frequencies_sum, max.words = 50, random.order = FALSE)
+```
+
+W przypadku chmury wspólnej dla obu powieści możemy zauważyć oczywiście imię głównej bohaterki, jej najlepszej przyjaciółki Diany i opiekunki Marilli, czy ukochanego Gilberta którzy występują w obu powieściach w mniejszym lub większym stopniu. Możemy również zauważyć słowa jak np. home, house - Anne pochodziła z sierocińca i posiadanie domu pełniło dużą rolę w jej życiu przez okres obu powieści. Słowo child - w pierwszej powieści odnoszące się bardziej do samej Anne, w drugiej natomiast do jej dzieci, podobnie w przypadku słowa girl. Słowo school - Anne w pierwszej powieści uczęszczała do szkoły, w późniejszej sama była nauczycielką. Występowanie takich słów jak dream i feel może wynikać z tego, że Anne całe życie była osobą wrażliwą, marzycielką.
+
+#### Chmura słów charakterystycznych dla powieści "Ania z Zielonego Wzgórza"
+
+```{r}
+
+words <- setdiff(terms1, terms2) 
+
+frequencies <- table(terms1)[words]
+
+wordcloud(words, frequencies, max.words = 50, random.order = FALSE)
+```
+
+<br>W chmurze słów charakterystycznej dla powieści "Ania z Zielnego Wzgórza" pojawiają się przede wszyskim imiona i nazwiska postaci, które nie występują w drugiej analizowanej powieści tak jak np. ukochana nauczycielka Anne - Miss Stacy, jej drugi nauczyciel Mr Philips, czy też Mrs Spencer, która przyprowadziła Anne jej opiekunom. Poza nauczycielami pojawia się też wiele słów związanych ze szkołą takich jak scholar, scholarship, desk, student, recitation, jako że Anne dużą wagę przywiązywała do swojej edukacji. Słowo brooch (broszka) symbolizuje zaginioną broszkę stanowiącą dużą część historii pierwszej części serii. Słowo orphan odnosi się do samej Anne, która była sierotą. Poza tym występuje też spora ilość słów związanych z naturą, gdzie Anne spędzała wiele czasu. <br>
+
+#### Chmura słów charakterystycznych dla powieści "Wymarzony dom Ani"
+
+```{r}
+
+words <- setdiff(terms2, terms1) 
+
+frequencies <- table(terms2)[words]
+
+wordcloud(words, frequencies, max.words = 50, random.order = FALSE)
+```
+
+W chmurze charakterystycznej dla powieści "Wymarzony Dom Anne" pojawiają się postacie nie występujące w poprzedniej powieści, głównie nowi sąsiedzi Anne po przeprowadzce tacy jak Captain Jim, Leslie i Dick Moore, Cornelia i Owen Ford. Występują też słowa związane z morzem takie jak harbor, sail, lighthouse, jako że wymarzony dom Anne znajduję się w nadmorskiej miejscowości, przeciwnie do drugiej analizowanej książki, gdzie dom Anne nie jest położony nad morzem.
+
+## Analiza sentymentu
+
+Następnie postanowiono ocenić jak rozkładają się nastroje w powieściach.
+
+W tym celu użyto leksykonu afinn określa "wartość" słowa od -5 do 5, gdzie słowa negatywne mają przypisywane wartości ujemne, a słowa pozytywne wartości dodatnie.
+
+```{r}
+afinn_sentiments <- get_sentiments("afinn")
+afinn_sentiments 
+```
+
+Leksykon nrc przypisuje słowom wartości pozytywne, negatywne ale i związane z emocjami takimi jak np. złość, obrzydzenie, strach, ale i radość czy zaufanie.
+
+```{r}
+nrc_sentiments <- get_sentiments("nrc")
+nrc_sentiments
+```
+
+##### Dla "Ania z Zielonego Wzgórza"
+
+W tym celu powieść podzielono tak, aby 80 linijek odpowiadało jednej kolumnie na wykresie.
+
+```{r}
+green_gables_afinn =
+  inner_join(green_gables_tokens, afinn_sentiments, by = join_by(word))
+
+green_gables_afinn_sentiments <- green_gables_afinn %>%
+  group_by(index = line %/% 80) %>%
+  summarise(value = sum(value))
+
+ggplot(green_gables_afinn_sentiments, aes(x = index, y = value)) +
+  geom_bar(stat = "identity", show.legend = FALSE, fill = "steelblue") +
+  labs(title = "Sentyment w powieści 'Ania z Zielonego Wzgórza' wg leksykonu Afinn",
+       x = "Indeks (jeden to 80 linijek powieści)",
+       y = "Sentyment")
+```
+
+Sentyment jest wyrażony jako suma wartości dla słów w obrębie 80 linijek wg leksykonu Afinn. W taki sposób odczytujemy czy dane fragmenty tekstu są bardziej pozytywne czy może bardziej negatywne. Możemy zaobserwować, przewagę pozytywnych emocji, natomiast w pewnych momentach następują spadki nastroju. Możliwym jest, że dzieje się tak ponieważ główna bohaterka była osobą wrażliwą i często targały nią negatywne emocje.
+
+Dodatkowo stworzono wykres za pomocą leksykonu nrc, na którym widać jakie emocje przeważają w powieści.
+
+```{r warning=FALSE}
+green_gables_nrc <- inner_join(green_gables_tokens, nrc_sentiments, by = join_by(word))
+
+green_gables_nrc_sentiments <- green_gables_nrc %>%
+  count(sentiment, sort = TRUE)
+
+ggplot(green_gables_nrc_sentiments, aes(x = reorder(sentiment, -n), y = n)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Częstotliwość występowania emocji w powieści 'Ania z Zielonego Wzgórza' wg leksykonu NRC",
+       x = "Emocje",
+       y = "Liczba wystąpień")
+```
+
+Ponownie widzimy przewagę pozytywnych emocji, dużą rolę odgrywa zaufanie i radość ale pojawiają się także negatwyne emocje, smutek, strach czy nawet złość, które odgrywają jednak mniejszą rolę.
+
+##### Dla "Wymarzony Dom Ani"
+
+Ponownie powieść podzielono tak, aby 80 linijek odpowiadało jednej kolumnie na wykresie.
+
+```{r}
+house_of_dreams_afinn =
+  inner_join(house_of_dreams_tokens, afinn_sentiments, by = join_by(word))
+
+house_of_dreams_afinn_sentiments <- house_of_dreams_afinn %>%
+  group_by(index = line %/% 80) %>%
+  summarise(value = sum(value))
+
+ggplot(house_of_dreams_afinn_sentiments, aes(x = index, y = value)) +
+  geom_bar(stat = "identity", show.legend = FALSE, fill = "steelblue") +
+  labs(title = "Sentyment w powieści 'Wymarzony Dom Ani' wg leksykonu Afinn",
+       x = "Indeks (jeden to 80 linijek powieści)",
+       y = "Sentyment")
+```
+
+Tak jak w przypadku poprzedniej powieści, sentyment jest wyrażony jako suma wartości dla słów w obrębie 80 linijek wg leksykonu Afinn. Obserwujemy dwa główne spadku nastroju w przypadku tej powieści - mogą być one związane z momentem utraty dziecka przez główną bohaterkę, śmiercią Kapitana Jima (Jamesa), który również był ważny dla głównej bohaterki oraz wyprowadzką z domu marzeń. Na koniec książki znów obserwujemy bardziej pozytywne odczucia, jako że życie bohaterów na nowo zaczyna się układać.
+
+Dodatkowo sprawdzono częstotliwość występowania emocji w powieści wg leksykonu NRC.
+
+```{r warning=FALSE}
+house_of_dreams_nrc <- inner_join(house_of_dreams_tokens, nrc_sentiments, by = join_by(word))
+
+house_of_dreams_nrc_sentiments <- house_of_dreams_nrc %>%
+  count(sentiment, sort = TRUE)
+
+ggplot(house_of_dreams_nrc_sentiments, aes(x = reorder(sentiment, -n), y = n)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Częstotliwość występowania emocji w powieści 'Wymarzony Dom Ani' wg leksykonu NRC",
+       x = "Emocje",
+       y = "Liczba wystąpień")
+```
+
+Mimo smutnych wydarzeń, w powieści przeważają pozytywne emocje, jednak negatwyne emocje w stosunku do powieści poprzedniej są na wyższej pozycji. Może być to związane z tym, że "Ania z Zielonego Wzgórza" to pierwsza część powieści, natomiast "Wymarzony Dom Ani" jest piątą częścią serii. Bohaterowie są starsi i borykają się z bardziej znaczącymi problemami niż w przypadku pierwszej powieści.
+
+## Analiza wątków
+
+W celu sprawdzenia czy wśród dokumentów występują przyjęte kategorie/grupy odzwierciedlające przyjętą dychotomię zdecydowano się podzielić książki na rozdziały, jako że podział tekstów na wiersze mógłby okazać się zbyt duży i zbyt trudny do analizy.
+
+#### Wczytanie danych jako rozdziały
+
+##### Dla "Ania z Zielonego Wzgórza"
+
+```{r warning=FALSE}
+green_gables_chapters <- readLines("C:/Users/basia/Desktop/Studia/Informatyka/Semestr 2/Analiza danych jakościowych i text mining/Anne of Green Gables.txt")
+
+text <- paste(green_gables_chapters, collapse = " ")
+
+green_gables_chapters <- str_split(text, pattern = "CHAPTER [IVXLCDM]+\\.") %>%
+  unlist() %>%
+  tail(-1) %>%
+  data.frame(chapter = 1:length(.), text = ., stringsAsFactors = FALSE)
+
+green_gables_chapters
+```
+
+##### Dla "Wymarzony Dom Ani"
+
+```{r warning=FALSE}
+house_of_dreams_chapters <- readLines("C:/Users/basia/Desktop/Studia/Informatyka/Semestr 2/Analiza danych jakościowych i text mining/Anne's House of Dreams.txt")
+
+text <- paste(house_of_dreams_chapters, collapse = " ")
+
+house_of_dreams_chapters <- str_split(text, pattern = "CHAPTER \\d+") %>%
+  unlist() %>%
+  tail(-1) %>%
+  data.frame(chapter = 1:length(.), text = ., stringsAsFactors = FALSE)
+
+house_of_dreams_chapters
+```
+
+#### Czyszczenie tekstu
+
+##### Dla "Ania z Zielonego Wzgórza"
+
+```{r}
+green_gables_chapters_cleaned <- clean_text(green_gables_chapters)
+
+green_gables_chapters_cleaned
+```
+
+##### Dla "Wymarzony Dom Ani"
+
+```{r}
+house_of_dreams_chapters_cleaned <- clean_text(house_of_dreams_chapters)
+
+house_of_dreams_chapters_cleaned
+```
+
+#### Tokenizacja
+
+##### Dla "Ania z Zielonego Wzgórza"
+
+```{r}
+green_gables_chapters_tokens <- green_gables_chapters_cleaned %>%
+  unnest_tokens(word, text)
+
+green_gables_chapters_tokens
+```
+
+##### Dla "Wymarzony dom Ani"
+
+```{r}
+house_of_dreams_chapters_tokens <- house_of_dreams_chapters_cleaned %>%
+  unnest_tokens(word, text)
+
+house_of_dreams_chapters_tokens
+```
+
+#### Stopwords
+
+##### Dla "Ania z Zielonego Wzgórza"
+
+```{r}
+stopwords1 <- data.frame(word=c(stopwords[[1]], "isn", "didn", "don", "ve", "hadn", "couldn", "aren", "ll", "illustration", "chapter", "anne", "miss", "mrs", "mr"))
+```
+
+```{r}
+green_gables_chapters_tidy <- anti_join(green_gables_chapters_tokens, stopwords1, by = join_by(word))
+green_gables_chapters_tidy
+```
+
+##### Dla "Wymarzony dom Ani"
+
+```{r}
+house_of_dreams_chapters_tidy <- anti_join(house_of_dreams_chapters_tokens, stopwords1, by = join_by(word))
+
+house_of_dreams_chapters_tidy
+```
+
+#### Lematyzacja
+
+##### Dla "Ania z Zielonego Wzgórza"
+
+```{r}
+green_gables_chapters_lem <- green_gables_chapters_tidy %>%
+  mutate(word_lemma = lemmatize_words(word, language = "english")) %>%
+  select(chapter, word_lemma)
+
+green_gables_chapters_lem
+```
+
+##### Dla "Wymarzony dom Ani"
+
+```{r}
+house_of_dreams_chapters_lem <- house_of_dreams_chapters_tidy %>%
+  mutate(word_lemma = lemmatize_words(word, language = "english")) %>%
+  select(chapter, word_lemma)
+
+house_of_dreams_chapters_lem
+```
+
+#### Złączenie wyczyszczonego tekstu z powrotem w rozdziały
+
+##### Dla "Ania z Zielonego Wzgórza"
+
+```{r}
+green_gables_combined <- green_gables_chapters_lem %>%
+  group_by(chapter) %>%
+  summarise(text = paste(word_lemma, collapse = " "))
+
+green_gables_combined
+```
+
+##### Dla "Wymarzony dom Ani"
+
+```{r}
+house_of_dreams_combined <- house_of_dreams_chapters_lem %>%
+  group_by(chapter) %>%
+  summarise(text = paste(word_lemma, collapse = " "))
+
+house_of_dreams_combined
+```
+
+```{r}
+books_combined <- rbind(green_gables_combined, house_of_dreams_combined)
+books_combined
+```
+
+#### Analiza wątków
+
+```{r}
+source_topic <- VectorSource(books_combined$text)
+corpus_topic <- VCorpus(source_topic)
+
+dtm_Tf <-  DocumentTermMatrix(corpus_topic,
+                                 control = list(weighting = weightTf))
+m_Tf <- as.matrix(dtm_Tf)
+
+
+```
+
+```{r}
+lda_topic <- LDA(dtm_Tf, 2, control = list(seed = 10000))
+
+topics <- topics(lda_topic)
+```
+
+```{r}
+topics_term <- terms(lda_topic, 8)
+as.data.frame(topics_term)
+```
+
+Podział dokumentów składających się rozdziałów obu powieści preznetuje się następująco. Wątki w topic 2 skupiają się bardziej wokół takich postaci jak Marilla, Diana, Matthew słowa takie jak make, feel, good mogą sugerować, że w tym wątku pojawiają się opisy działań i emocji związanych z tymi postaciami, ich interakcji i doświadczeń.
+
+W przypadku topic 1 pojawiają się takie postacie jak Leslie, Gilbert, Captain czy Cornelia, możemy więc przypuszczać że tym razem opowieść skupia się na relacjach pomiędzy tymi postaciami. Pojawiają się również takie słowa jak make oraz house a zatem w wątkach przejawiać może się jakiś proces tworzenia oraz coś związanego z zaciszem domowym.
+
+```{r}
+
+
+topic_terms <- apply(topics_term, 2, paste, collapse = "/ ")
+
+topics_df <- data.frame(part_of_text = str_sub(books_combined$text, start = 1, end = 60), topic = topics, terms = topic_terms[topics])
+
+topics_df 
+```
+
+Powyższa ramka danych przedstawia fragmenty poszczególnych rozdziałów oraz do jakiego wątku zostały zakwalifikowane oraz słowa kluczowe tego wątku. Możemy zauważyć że rozdziały powieści "Ania z Zielonego Wzgórza" w dużej mierze zakfalifikowały się do wątku drugiego, natomiast w przypadku rozdziałów z powieści "Wymarzony Dom Ani" do wątku pierwszego. Zdarzyło się jednak, że rozdziały zostały przypisane odwrotnie mozemy więc twierdzić, że wątki w przypadku tych rozdziałów są zbliżone i trudno jednoznacznie określić ich przynależność.
+
+##### Wizualizacja ważności termów w wątkach
+
+```{r warning=FALSE}
+beta_df <- data_frame(term = lda_topic@terms, topic1 = exp(lda_topic@beta[1, ]), topic2 = exp(lda_topic@beta[2, ]))
+
+beta_tidy <- beta_df %>% 
+  pivot_longer(-term, names_to = "watek", values_to = "beta")
+
+beta_top <- beta_tidy %>% 
+  group_by(watek) %>% 
+  top_n(5, beta) %>% 
+  ungroup() %>% 
+  arrange(watek, -beta)
+
+beta_top %>% 
+ggplot(aes(beta, tidytext::reorder_within(term, beta, watek), fill = watek)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c("royalblue", "orange2")) +
+  facet_wrap(vars(watek), scales = "free_y") +
+  labs(x = "Termy") +
+  tidytext::scale_y_reordered() +
+  labs(x = expression(beta), y = NULL) +
+  theme_bw()
+```
+
+Wykorzystując wartości beta można obliczyć szansę przynależności termu do danego wątku. Im wyższa wartość tym większe szanse że term charakteryzuje temat. W tym przypadku największe szanse w przypadku topic2 ma term Marilla, a w przypadku topic1 term Leslie. Możemy też stwierdzić, że np. słowo Marilla jest bardziej charaterystyczne dla topic2 niż słowo Leslie jest charaktersytyczne dla topic1.
+
+```{r}
+gamma_df <- data_frame(document = lda_topic@documents[1:38], topic1 = lda_topic@gamma[, 1][1:38], topic2 = lda_topic@gamma[, 2][1:38])
+
+gamma_tidy <- gamma_df %>% 
+  pivot_longer(-document, names_to = "topic", values_to = "gamma")
+
+gamma_tidy %>% 
+  ggplot(aes(document, gamma, fill = topic)) + 
+  geom_col(position = "stack") +
+  scale_fill_manual(values = c("royalblue", "orange2")) +
+  geom_hline(yintercept = 0.5, linetype = 2) +
+  coord_flip() +
+  labs(fill = "Topics") +
+  theme_bw() +
+  labs(title = "Rozkład wątków dla rozdziałów 'Ania z Zielonego Wzgórza'")
+
+```
+
+```{r}
+gamma_df <- data_frame(document = lda_topic@documents[39:78], topic1 = lda_topic@gamma[, 1][39:78], topic2 = lda_topic@gamma[, 2][39:78])
+
+gamma_tidy <- gamma_df %>% 
+  pivot_longer(-document, names_to = "topic", values_to = "gamma")
+
+gamma_tidy %>% 
+  ggplot(aes(document, gamma, fill = topic)) + 
+  geom_col(position = "stack") +
+  scale_fill_manual(values = c("royalblue", "orange2")) +
+  geom_hline(yintercept = 0.5, linetype = 2) +
+  coord_flip() +
+  labs(fill = "Topics") +
+  theme_bw() +
+  labs(title = "Rozkład wątków dla rozdziałów 'Wymarzony Dom Ani'")
+```
+
+<br> Rozkład przedstawiono na dwóch wykresach w podziale na powieści aby lepiej ukazać jak rozłożyły się wątki. Jak możemy zauważyć w powieści "Ania z Zielonego Wzgórza" dominuje wątek (topic) 2, natomiast w przypadku "Wymarzonego Domu Ani" obserwujemy dominację wątku 1. W pewnych rozdziałach możemy zauważyć pewne niejasności jeżeli chodzi o dominację któregoś z wątku. Przykładowo w dwóch rozdziałach książki "Wymarzony Dom Ani" obserwujemy przewagę wątku 2, co może wynikać np. z wspominania postaci, miejsc występujacych w pierwszej części serii.<br>
+
+#### Grupowanie
+
+
+Wybrano metodę grupowania k-means, ponieważ w przypadku grupowania hierarchicznego wyniki były nieczytelne i wymagały zbyt wielu poziomów. 
+
+```{r fig.height=5, fig.width=11}
+dtm_norm <- t(scale(t(m_Tf), center=FALSE, scale=sqrt(rowSums(m_Tf^2))))
+km2 <- kmeans(dtm_norm, 2)
+
+group_df <- data.frame(Document = rownames(dtm_norm), Group = km2$cluster)
+
+ggplot(group_df, aes(x = reorder(Document, as.numeric(Document)), y = Group, color = factor(Group))) +
+  geom_point(size = 4, shape = 18) +
+  scale_color_manual(values = c("steelblue", "orange2")) +
+  labs(x = "Document", y = "Group", color = "group") +  
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), legend.position = "top") +
+  scale_y_continuous(limits = c(0.5, 2.5), breaks = c(1, 2), expand = c(0, 0.5))
+
+```
+
+
+Przy grupowaniu możemy zaobserwować, że rozdziały od 1-38 należące do powieści "Ania z Zielonego Wzgórza" wpadają do grupy 2. W przypadku drugiej powieści "Wymarzony dom Ani" większość dokumentów (39-78, rozdziałów od 1-40) wpada do grupy 1 - z wyjątkiem 4 rozdziałów. Wyodrębnione grupy są zbliżone do analizy wątków, natomiast w przypadku analizy wątków mniej rozdziałów zostało przypisanych do wątku bardziej zbliżonego do wątków występujących w przeciwnej powieści. 
+
+
+## Klasyfikacja
+
+W celu klasyfikacji użyto grup wyodrębnionych na drodze analizy wątków. 
+Topic1 - klasa dla wątku 1 (związany bardziej z książką "Wymarzony Dom Ani") 
+Topic2 - klasa dla wątku 2 (związany bardziej z książką "Ania z Zielonego Wzgórza")
+
+```{r}
+green_gables_combined$type <- topics[1:38]
+green_gables_combined
+```
+
+
+```{r}
+house_of_dreams_combined$type <- topics[39:78]
+house_of_dreams_combined
+```
+
+#### Macierz binarna
+
+```{r}
+dtm_Bin <-  DocumentTermMatrix(corpus_topic,
+                                 control = list(weighting = weightBin))
+m_Bin <- data.frame(as.matrix(dtm_Bin))
+m_Bin$type <- factor(topics, levels = c(1, 2), labels = c("Topic1", "Topic2"))
+```
+
+```{r}
+
+train_indices <- createDataPartition(m_Bin$type, p = 0.7, list = FALSE)
+
+m_Bin_train <- m_Bin[train_indices, ]
+m_Bin_test <- m_Bin[-train_indices, ]
+```
+
+```{r}
+table(m_Bin_test$type)
+```
+
+```{r}
+table(m_Bin_train$type)
+```
+
+Udział klas w poszczególnych zbiorach jest zatem podobny, mniej więcej 50%.
+
+```{r}
+modelBay_Bin <-naiveBayes(type ~ ., data = m_Bin_train)
+```
+
+
+
+Macierz pomyłek
+
+```{r}
+
+class_predict_Bin <- predict(modelBay_Bin, newdata = m_Bin_test)
+
+confusion_matrix_Bin <- confusionMatrix(class_predict_Bin, m_Bin_test$type)
+confusion_matrix_Bin
+```
+
+Dzięki macierzy pomyłek możemy sprawdzić ile przypadków zakfalifikowano poprawnie.
+
+#### Macierz logarytmiczna
+
+```{r}
+dtm_Tf <-  DocumentTermMatrix(corpus_topic,
+                                 control = list(weighting = weightTf))
+m_log <- log2(as.matrix(dtm_Tf) + 1)
+
+m_log <- data.frame(m_log)
+
+m_log$type <- factor(topics, labels = c("Topic1", "Topic2"))
+
+```
+
+```{r}
+
+train_indices <- createDataPartition(m_log$type, p = 0.7, list = FALSE)
+
+m_log_train <- m_log[train_indices, ]
+m_log_test <- m_log[-train_indices, ]
+```
+
+```{r}
+table(m_log_test$type)
+```
+
+```{r}
+table(m_log_train$type)
+```
+```{r}
+modelBay_log<-naiveBayes(type ~ ., data = m_log_train)
+```
+
+Macierz pomyłek
+
+```{r}
+class_predict_log <- predict(modelBay_log, newdata = m_log_test)
+
+confusion_matrix_log <- confusionMatrix(class_predict_log, m_log_test$type)
+confusion_matrix_log
+```
+
+#### Macierz TlIDf
+
+```{r}
+dtm_TfIdf <-  DocumentTermMatrix(corpus_topic,
+                                 control = list(weighting = weightTfIdf))
+
+m_Tfidf <- data.frame(as.matrix(dtm_TfIdf))
+
+m_Tfidf$type <- factor(topics, labels = c("Topic1", "Topic2"))
+
+```
+
+```{r}
+
+train_indices <- createDataPartition(m_Tfidf$type, p = 0.7, list = FALSE)
+
+m_Tfidf_train <- m_Tfidf[train_indices, ]
+m_Tfidf_test <- m_Tfidf[-train_indices, ]
+```
+
+```{r}
+table(m_Tfidf_test$type)
+```
+
+```{r}
+table(m_Tfidf_train$type)
+```
+```{r}
+modelBay_tfidf<-naiveBayes(type ~ ., data = m_Tfidf_train)
+```
+
+
+```{r}
+class_predict_tfidf <- predict(modelBay_tfidf, newdata = m_Tfidf_test)
+
+confusion_matrix_tfidf <- confusionMatrix(class_predict_tfidf, m_Tfidf_test$type)
+confusion_matrix_tfidf
+```
+Możemy zaobserwować, że dokładność dla macierzy TfiDf jest lepsza niż w przypadku macierzy binarnej i logarytmicznej, które są do siebie zbliżone.
+
+W przypadku tej macierzy dla klasy  "Topic1" model klasyfikacji poprawnie przewidział 11 przypadków należących do tego tematu.
+oraz niepoprawnie przewidział 1 przypadków, które faktycznie należą do tematu "Topic2".
+
+Dla klasy "Topic2" model klasyfikacji niepoprawnie przewidział 0 przypadków, które faktycznie należą do tematu "Topic1", a poprawnie przewidział 11 przypadków należących do tego tematu.
+
+
+
+
+
+
